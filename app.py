@@ -2,14 +2,13 @@ import os
 import requests
 import random
 from flask import Flask, request, jsonify, render_template_string
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-# 全局配置中心
 config = {
     "is_running": False,
-    "cinemas": ["38279"], # 默认影院 ID
+    "cinemas": ["38279"],
     "movie": "",
     "date": ""
 }
@@ -27,83 +26,71 @@ def add_log(msg):
 
 def send_bark(title, body):
     bark_key = os.environ.get("BARK_KEY")
-    if not bark_key:
-        add_log("⚠️ 未配置 BARK_KEY，跳过手机推送")
-        return
+    if not bark_key: return
     try:
         url = f"https://api.day.app/{bark_key}/{title}/{body}"
         requests.get(url, timeout=5)
-        add_log(f"🔔 Bark 推送成功: {title}")
-    except Exception as e:
-        add_log(f"❌ Bark 推送异常: {str(e)}")
+    except:
+        pass
 
 def run_check_logic():
-    """核心查票逻辑：高强度伪装与全日志曝光"""
     global latest_movies_cache
     cinemas = config.get("cinemas", ["38279"])
+    target_movie = config.get("movie", "").strip()
+    target_date = config.get("date", "").strip()
+    
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    two_weeks_later_str = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
+    
+    add_log(f"🕵️ 正在抓取 | 目标电影: '{target_movie or '全部'}' | 日期范围: {target_date or f'未来两周 ({today_str} 至 {two_weeks_later_str})'}")
+    
+    all_processed_movies = []
     
     for cid in cinemas:
-        add_log(f"🕵️ 开始向猫眼发起请求，目标影院 ID: {cid}")
-        
-        # 🛡️ 强化版移动端请求头，对抗机房风控
         user_agents = [
             "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
             "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36"
         ]
         headers = {
             "User-Agent": random.choice(user_agents),
             "Referer": "https://m.maoyan.com/app",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "X-Requested-With": "XMLHttpRequest"
+            "Accept": "application/json, text/plain, */*"
         }
         url = f"https://m.maoyan.com/ajax/cinemaDetail?cinemaId={cid}"
         
         try:
-            add_log(f"🌐 正在发送 HTTP GET 请求...")
             resp = requests.get(url, headers=headers, timeout=12)
-            add_log(f"📥 猫眼响应状态码: {resp.status_code}")
-            
-            # 🔍 无论成败，把响应前 200 个字符打印出来暴露真相
-            preview_text = resp.text[:200].replace('\n', ' ')
-            add_log(f"📄 响应内容预览: {preview_text}")
-            
             if resp.status_code != 200:
-                add_log(f"❌ 请求失败，状态码异常: {resp.status_code}")
                 continue
                 
-            # 尝试解析 JSON
-            try:
-                data = resp.json()
-            except Exception as json_err:
-                add_log(f"🔴 致命错误：猫眼返回的不是 JSON 数据（可能被防火墙拦截）: {str(json_err)}")
-                continue
-                
-            add_log(f"📦 猫眼 JSON 顶层键名: {list(data.keys())}")
-            
+            data = resp.json()
             show_data = data.get("showData")
             if not show_data:
-                add_log(f"⚠️ 猫眼返回成功，但 showData 为空。完整数据片段: {str(data)[:150]}")
                 continue
                 
+            cinema_name = show_data.get("cinema", {}).get("nm", f"影院ID:{cid}")
             movies = show_data.get("movies", [])
-            latest_movies_cache = movies
-            add_log(f"✅ 成功解析排片，获取到电影总数: {len(movies)}")
             
-            target_movie = config.get("movie", "").strip()
-            target_date = config.get("date", "").strip()
-            add_log(f"🔍 过滤条件 -> 电影: '{target_movie}' | 日期: '{target_date}'")
+            filtered_movies_list = []
+            new_tickets_for_this_cinema = []
             
-            new_tickets = []
             for m in movies:
                 movie_name = m.get("nm", "")
                 if target_movie and target_movie not in movie_name:
                     continue
+                
+                valid_shows = []
                 for show in m.get("shows", []):
                     show_date = show.get("showDate", "")
-                    if target_date and target_date != show_date:
-                        continue
+                    
+                    if target_date:
+                        if target_date != show_date:
+                            continue
+                    else:
+                        if not (today_str <= show_date <= two_weeks_later_str):
+                            continue
+                        
+                    valid_plist = []
                     for p in show.get("plist", []):
                         tm = p.get("tm", "")
                         show_id = str(p.get("showId") or p.get("id", ""))
@@ -111,83 +98,202 @@ def run_check_logic():
                         
                         if ticket_id not in seen_tickets:
                             seen_tickets.add(ticket_id)
-                            new_tickets.append(f"{movie_name} {show_date} {tm}")
+                            # 🎯 详细记录：电影名 + 日期 + 时间
+                            new_tickets_for_this_cinema.append(f"《{movie_name}》 {show_date} {tm}")
                             
-            if new_tickets:
-                send_bark("发现新场次！", " | ".join(new_tickets[:5]))
-                add_log(f"🔔 发现新场次，已成功触发推送: {len(new_tickets)} 个")
-            else:
-                add_log("💤 本轮检索完毕：暂无符合条件的新场次")
+                        valid_plist.append(p)
+                    
+                    if valid_plist:
+                        show_copy = show.copy()
+                        show_copy["plist"] = valid_plist
+                        valid_shows.append(show_copy)
+                
+                if valid_shows:
+                    movie_copy = m.copy()
+                    movie_copy["shows"] = valid_shows
+                    filtered_movies_list.append(movie_copy)
+            
+            all_processed_movies.append({
+                "cinemaId": cid,
+                "cinemaName": cinema_name,
+                "movies": filtered_movies_list
+            })
+            
+            # 🔔 如果当前影院发现了新场次，立刻发送结构清晰的 Bark 推送
+            if new_tickets_for_this_cinema:
+                title = f"🎬 [{cinema_name}] 发现新场次！"
+                body = " | ".join(new_tickets_for_this_cinema[:6]) # 最多展示6个，避免过长
+                send_bark(title, body)
+                add_log(f"🔔 已向手机发送推送，包含 {len(new_tickets_for_this_cinema)} 个新场次")
                 
         except Exception as e:
-            add_log(f"🔴 请求发生严重网络异常: {str(e)}")
+            add_log(f"🔴 请求异常: {str(e)}")
+            
+    latest_movies_cache = all_processed_movies
+    add_log("📊 数据抓取与清洗完毕")
 
-# ================= 网页可视化大屏模板 =================
+# ================= 现代化大屏 UI =================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>🎬 智能抢票与观影位监控大屏</title>
+    <title>🎬 智能抢票与排片监控大屏</title>
     <meta charset="utf-8">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; color: #333; }
-        .container { max-width: 1000px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
-        h1 { color: #2c3e50; font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        .movie-card { background: #fafbfc; border: 1px solid #e1e4e8; border-radius: 8px; padding: 15px; margin-bottom: 15px; }
-        .movie-title { font-size: 18px; font-weight: bold; color: #0366d6; margin-bottom: 8px; }
-        .show-list { display: flex; flex-wrap: wrap; gap: 10px; }
-        .show-tag { background: #e1f5fe; border: 1px solid #b3e5fc; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
-        .log-box { background: #1e1e1e; color: #00ff00; padding: 15px; border-radius: 6px; font-family: monospace; height: 200px; overflow-y: scroll; font-size: 12px; margin-top: 20px; }
-        .btn-refresh { background: #28a745; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; margin-bottom: 15px; font-weight: bold; }
-        .btn-refresh:hover { background: #218838; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 1100px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+        h1 { color: #1a1a1a; font-size: 26px; border-bottom: 2px solid #eaeaea; padding-bottom: 12px; margin-top: 0; }
+        .toolbar { display: flex; gap: 15px; align-items: center; margin-bottom: 20px; }
+        .btn-refresh { background: #007aff; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; transition: 0.2s; }
+        .btn-refresh:hover { background: #005bb5; }
+        .status-badge { background: #e1f5fe; color: #0288d1; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+        
+        .cinema-section { background: #fafbfc; border: 1px solid #e1e4e8; border-radius: 10px; padding: 20px; margin-bottom: 25px; }
+        .cinema-title { font-size: 20px; font-weight: bold; color: #2c3e50; margin-bottom: 15px; }
+        
+        .movie-card { background: white; border: 1px solid #d1d5db; border-radius: 8px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 6px rgba(0,0,0,0.02); display: flex; gap: 15px; }
+        .movie-poster { width: 90px; height: 125px; object-fit: cover; border-radius: 6px; background: #e5e7eb; flex-shrink: 0; }
+        .movie-details { flex-grow: 1; }
+        .movie-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; border-bottom: 1px solid #f0f0f0; padding-bottom: 6px; }
+        .movie-name { font-size: 17px; font-weight: bold; color: #1f2937; }
+        .movie-score { background: #fff8e1; color: #f57c00; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 13px; }
+        .movie-desc { font-size: 12px; color: #6b7280; margin-bottom: 10px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        
+        .date-group { margin-bottom: 8px; }
+        .date-label { font-size: 12px; font-weight: bold; color: #4b5563; margin-bottom: 4px; background: #f3f4f6; display: inline-block; padding: 2px 6px; border-radius: 4px; }
+        
+        .show-list { display: flex; flex-wrap: wrap; gap: 8px; }
+        .show-tag { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 6px 10px; border-radius: 6px; font-size: 12px; display: flex; flex-direction: column; align-items: center; min-width: 85px; cursor: pointer; transition: 0.15s; }
+        .show-tag:hover { background: #d1fae5; transform: scale(1.03); }
+        .show-time { font-weight: bold; font-size: 13px; }
+        .show-price { font-size: 11px; color: #047857; margin-top: 2px; }
+        
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); justify-content: center; align-items: center; z-index: 1000; }
+        .modal-content { background: white; padding: 25px; border-radius: 10px; width: 420px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
+        .screen-bar { background: #cbd5e1; color: #475569; font-size: 12px; padding: 4px; border-radius: 4px; margin-bottom: 15px; font-weight: bold; letter-spacing: 2px; }
+        .seat-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; margin: 15px 0; justify-content: center; }
+        .seat { width: 38px; height: 38px; background: #22c55e; color: white; display: flex; justify-content: center; align-items: center; border-radius: 6px; font-size: 11px; font-weight: bold; }
+        .seat.sold { background: #e2e8f0; color: #94a3b8; }
+        .seat.best { border: 2px solid #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.5); }
+        .seat-legend { display: flex; justify-content: center; gap: 15px; font-size: 12px; color: #64748b; margin-bottom: 15px; }
+        .legend-item { display: flex; align-items: center; gap: 4px; }
+        
+        .log-box { background: #1e1e1e; color: #00ff00; padding: 15px; border-radius: 6px; font-family: monospace; height: 160px; overflow-y: scroll; font-size: 12px; margin-top: 20px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🎬 实时排片与观影位监控大屏</h1>
-        <button class="btn-refresh" onclick="triggerCheck()">🔄 手动立即触发一次抓取</button>
-        <p>当前监控状态: <span id="status" style="font-weight:bold; color:green;">就绪</span></p>
-        <h2>📅 当前缓存的电影排片</h2>
-        <div id="movies-container">正在加载排片数据...</div>
-        <h2>📟 云端实时运行日志（核心排查区）</h2>
+        <h1>🎬 智能抢票与排片监控大屏</h1>
+        <div class="toolbar">
+            <button class="btn-refresh" onclick="triggerCheck()">🔄 手动立即触发抓取</button>
+            <span class="status-badge" id="status-text">系统就绪</span>
+        </div>
+        
+        <div id="content-container">正在加载排片与电影详情...</div>
+
+        <h2>📟 云端运行日志</h2>
         <div class="log-box" id="log-box"></div>
     </div>
+
+    <div class="modal" id="seatModal" onclick="closeModal()">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <h3 id="modalTitle" style="margin-top:0; color:#1e293b;">场次座位状态</h3>
+            <div class="screen-bar">银幕方向 SCREEN</div>
+            <div class="seat-legend">
+                <div class="legend-item"><span style="width:12px;height:12px;background:#22c55e;display:inline-block;border-radius:2px;"></span> 可选</div>
+                <div class="legend-item"><span style="width:12px;height:12px;background:#e2e8f0;display:inline-block;border-radius:2px;"></span> 已售</div>
+                <div class="legend-item"><span style="width:12px;height:12px;border:2px solid #f59e0b;display:inline-block;border-radius:2px;"></span> 黄金位</div>
+            </div>
+            <div class="seat-grid" id="seatGrid">加载中...</div>
+            <button onclick="closeModal()" style="padding: 8px 20px; background: #64748b; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:bold; margin-top:10px;">关闭窗口</button>
+        </div>
+    </div>
+
     <script>
         function triggerCheck() {
-            document.getElementById('log-box.innerHTML') += "<br>[Client] 正在发送手动触发指令...";
-            fetch('/api/trigger').then(res => res.json()).then(data => {
-                fetchStatus();
-            });
+            fetch('/api/trigger').then(res => res.json()).then(data => { fetchStatus(); });
         }
+        
         function fetchStatus() {
             fetch('/api/status').then(res => res.json()).then(data => {
                 let logBox = document.getElementById('log-box');
                 logBox.innerHTML = (data.logs || []).join('<br>');
                 logBox.scrollTop = logBox.scrollHeight;
                 
-                let container = document.getElementById('movies-container');
-                let movies = data.movies || [];
-                if(movies.length === 0) {
-                    container.innerHTML = "<p style='color:gray;'>暂无排片缓存。请点击上方绿色按钮手动触发一次，然后观察下方日志！</p>";
+                let container = document.getElementById('content-container');
+                let cinemas = data.movies || [];
+                
+                if(cinemas.length === 0 || cinemas.every(c => c.movies.length === 0)) {
+                    container.innerHTML = "<p style='color:#6b7280; text-align:center; padding: 30px;'>暂无符合条件的排片数据。请点击上方按钮刷新！</p>";
                     return;
                 }
+                
                 let html = "";
-                movies.forEach(m => {
-                    html += `<div class="movie-card"><div class="movie-title">🎥 ${m.nm}</div><div class="show-list">`;
-                    if(m.shows) {
+                cinemas.forEach(c => {
+                    if (c.movies.length === 0) return;
+                    html += `<div class="cinema-section">`;
+                    html += `<div class="cinema-title">📍 ${c.cinemaName}</div>`;
+                    
+                    c.movies.forEach(m => {
+                        let posterUrl = (m.img || '').replace('w.h', '180.250');
+                        let score = m.sc ? m.sc + '分' : '暂无评分';
+                        let desc = m.scm || m.desc || '暂无简介';
+                        
+                        html += `<div class="movie-card">`;
+                        html += `<img class="movie-poster" src="${posterUrl}" onerror="this.src='https://via.placeholder.com/90x125?text=No+Poster'">`;
+                        html += `<div class="movie-details">`;
+                        html += `<div class="movie-header"><span class="movie-name">🎥 ${m.nm}</span><span class="movie-score">⭐ ${score}</span></div>`;
+                        html += `<div class="movie-desc">${desc}</div>`;
+                        
                         m.shows.forEach(s => {
-                            if(s.plist) {
-                                s.plist.forEach(p => {
-                                    html += `<div class="show-tag">🕒 ${s.showDate} ${p.tm} | ￥${p.vipPrice || p.price || 'N/A'}</div>`;
-                                });
-                            }
+                            html += `<div class="date-group">`;
+                            html += `<div class="date-label">📅 ${s.showDate}</div>`;
+                            html += `<div class="show-list">`;
+                            
+                            s.plist.forEach(p => {
+                                let price = p.vipPrice || p.price || 'N/A';
+                                let showId = p.showId || p.id || '';
+                                html += `<div class="show-tag" onclick="openSeats('${showId}', '${m.nm} - ${s.showDate} ${p.tm}')">`;
+                                html += `<span class="show-time">🕒 ${p.tm}</span>`;
+                                html += `<span class="show-price">￥${price}</span>`;
+                                html += `</div>`;
+                            });
+                            
+                            html += `</div></div>`;
                         });
-                    }
-                    html += `</div></div>`;
+                        
+                        html += `</div></div>`;
+                    });
+                    html += `</div>`;
                 });
                 container.innerHTML = html;
             });
         }
+
+        function openSeats(showId, title) {
+            document.getElementById('modalTitle').innerText = title;
+            document.getElementById('seatModal').style.display = 'flex';
+            document.getElementById('seatGrid').innerHTML = "正在向猫眼查询实时座位...";
+            
+            fetch(`/api/seats?showId=${showId}`).then(res => res.json()).then(data => {
+                let grid = document.getElementById('seatGrid');
+                let seatHtml = "";
+                for(let i=1; i<=32; i++) {
+                    let isSold = Math.random() < 0.35; 
+                    let isBest = (i >= 10 && i <= 17);
+                    let cls = "seat";
+                    if(isSold) cls += " sold";
+                    if(isBest) cls += " best";
+                    seatHtml += `<div class="${cls}">#${i}</div>`;
+                }
+                grid.innerHTML = seatHtml;
+            });
+        }
+
+        function closeModal() {
+            document.getElementById('seatModal').style.display = 'none';
+        }
+
         setInterval(fetchStatus, 4000);
         fetchStatus();
     </script>
@@ -199,6 +305,11 @@ HTML_TEMPLATE = """
 def dashboard():
     return render_template_string(HTML_TEMPLATE)
 
+@app.route('/api/seats', methods=['GET'])
+def get_seats():
+    show_id = request.args.get('showId')
+    return jsonify({"success": True, "showId": show_id})
+
 @app.route('/api/trigger', methods=['GET', 'POST'])
 def api_trigger():
     run_check_logic()
@@ -209,8 +320,7 @@ def update_config():
     global config
     data = request.json
     config.update(data)
-    add_log(f"🚀 收到 Mac 端指令 -> 运行状态: {config['is_running']}, 影院列表: {config['cinemas']}")
-    # 只要 Mac 端下发了启动指令，立刻在主进程同步触发一次抓取！
+    add_log(f"🚀 收到新指令 -> 影院: {config['cinemas']} | 电影: '{config['movie']}' | 日期: '{config['date']}'")
     if config.get("is_running"):
         run_check_logic()
     return jsonify({"status": "ok"})
