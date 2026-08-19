@@ -105,18 +105,32 @@ def check_cinema(cid):
 
 
 def monitor_task():
-    add_log("🚀 后台监控守护进程已启动")
+  def monitor_task():
+    # 🔴 强制在入口处打印，绝不静默！
+    print("🔥【死命令】monitor_task 线程函数已经成功进入！")
+    add_log("🔥【死命令】monitor_task 线程函数已经成功进入！")
+    
     while True:
         try:
+            add_log(f"🔎 检查当前状态 -> is_running: {config['is_running']}, cinemas: {config['cinemas']}")
             if config["is_running"] and config["cinemas"]:
                 for cid in config["cinemas"]:
+                    add_log(f"🎯 准备开始检查影院: {cid}")
                     check_cinema(cid)
-                time.sleep(random.randint(20, 40))
+                
+                wait_time = random.randint(20, 40)
+                add_log(f"--- 巡检结束，休息 {wait_time} 秒 ---")
+                time.sleep(wait_time)
             else:
-                time.sleep(3)
+                add_log("💤 监控未启动或影院列表为空，线程休眠 5 秒...")
+                time.sleep(5)
         except Exception as e:
-            add_log(f"🔴 后台循环错误: {str(e)}")
+            add_log(f"🔴 后台循环捕获到重大异常: {str(e)}")
             time.sleep(10)
+
+# 在最底部启动线程的地方保持不变：
+# threading.Thread(target=monitor_task, daemon=True).start()
+
 
 threading.Thread(target=monitor_task, daemon=True).start()
 
