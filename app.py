@@ -16,8 +16,7 @@ logs = []
 seen_tickets = set()
 latest_movies_cache = []
 
-# 🧠 状态标记：记录每个影院是否已经发送过“无排片提醒”，避免重复骚扰
-# 格式: { cinema_id: True/False }
+# 🧠 状态标记：记录每个影院是否已经发送过“无排片提醒”
 has_alerted_no_show = {}
 
 def add_log(msg):
@@ -122,11 +121,9 @@ def run_check_logic():
                 "movies": filtered_movies_list
             })
             
-            # 🎯 核心逻辑判定：
             has_movies = len(filtered_movies_list) > 0
             
             if has_movies:
-                # 1. 发现了排片：如果之前发过无排片提醒，现在重置状态；如果有全新未见过的场次，发送喜讯
                 if has_alerted_no_show.get(cid, False):
                     add_log(f"🟢 [{cinema_name}] 检测到排片已发布，解除无排片状态限制")
                     has_alerted_no_show[cid] = False
@@ -137,9 +134,7 @@ def run_check_logic():
                     send_bark(title, body)
                     add_log(f"🔔 已发送新场次喜讯推送: {len(new_tickets_for_this_cinema)} 个")
             else:
-                # 2. 如果指定了具体电影和日期，但确实没有排片
                 if target_movie and target_date:
-                    # 如果还没发过无排片提醒，则发送【仅一次】
                     if not has_alerted_no_show.get(cid, False):
                         has_alerted_no_show[cid] = True
                         send_bark(f"⏳ [{cinema_name}] 监控中...", f"指定日期 {target_date} 暂无《{target_movie}》排片，已进入静默监控，有新排片将立即通知！")
@@ -153,7 +148,7 @@ def run_check_logic():
     latest_movies_cache = all_processed_movies
     add_log("📊 数据巡检与过滤完毕")
 
-# ================= 现代化大屏 UI =================
+# ================= 现代化大屏 UI (修复购票直达链接) =================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -221,7 +216,7 @@ HTML_TEMPLATE = """
                 let cinemas = data.movies || [];
                 
                 if(cinemas.length === 0 || cinemas.every(c => c.movies.length === 0)) {
-                    container.innerHTML = "<p style='color:#6b7280; text-align:center; padding: 30px;'>暂无符合条件的排片数据（若指定了日期且无排片，云端已自动发送【仅一次】未排片提醒，并进入静默监控）。</p>";
+                    container.innerHTML = "<p style='color:#6b7280; text-align:center; padding: 30px;'>暂无符合条件的排片数据。</p>";
                     return;
                 }
                 
@@ -249,11 +244,12 @@ HTML_TEMPLATE = """
                             
                             s.plist.forEach(p => {
                                 let price = p.vipPrice || p.price || 'N/A';
-                                let maoyanSeatUrl = `https://m.maoyan.com/cinemas/detail/${c.cinemaId}`;
-                                html += `<a class="show-tag" href="${maoyanSeatUrl}" target="_blank" title="点击直达猫眼真实选座购票">`;
+                                // 🛠️ 修复后的猫眼标准影院详情直达链接（不会再出现迷路页面）
+                                let maoyanSeatUrl = `https://m.maoyan.com/cinema/${c.cinemaId}?poi=1`;
+                                html += `<a class="show-tag" href="${maoyanSeatUrl}" target="_blank" title="点击直达猫眼选座">`;
                                 html += `<span class="show-time">🕒 ${p.tm}</span>`;
                                 html += `<span class="show-price">￥${price} 购票 ▶</span>`;
-                                html += `</div>`;
+                                html += `</a>`;
                             });
                             
                             html += `</div></div>`;
@@ -287,7 +283,6 @@ def api_trigger():
 def update_config():
     global config, has_alerted_no_show
     data = request.json
-    # 如果用户修改了监控的电影或日期，重置无排片提醒状态
     if data.get("movie") != config.get("movie") or data.get("date") != config.get("date"):
         has_alerted_no_show = {}
     
