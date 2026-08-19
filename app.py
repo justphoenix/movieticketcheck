@@ -37,26 +37,46 @@ def send_bark(title, body):
 
 def check_cinema(cid):
     global latest_movies_cache
+    add_log(f"🕵️ 正在准备请求猫眼影院 ID: {cid}")
+    
     user_agents = [
         "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+        "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36"
     ]
-    headers = {"User-Agent": random.choice(user_agents)}
+    headers = {
+        "User-Agent": random.choice(user_agents),
+        "Referer": "https://m.maoyan.com/",
+        "Accept": "application/json, text/plain, */*"
+    }
     url = f"https://m.maoyan.com/ajax/cinemaDetail?cinemaId={cid}"
     
     try:
+        # 打印即将发出的请求
+        add_log(f"🌐 正在向猫眼发送 HTTP 请求...")
         resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code != 200: return
+        add_log(f"📥 猫眼响应状态码: {resp.status_code}")
+        
+        if resp.status_code != 200:
+            add_log(f"❌ 访问猫眼失败，HTTP 状态码异常: {resp.status_code}")
+            return
             
         data = resp.json()
+        # 打印返回数据的顶层Key，看看里面到底有什么
+        add_log(f"📦 猫眼返回的 JSON 顶层键名: {list(data.keys())}")
+        
         show_data = data.get("showData")
-        if not show_data: return
+        if not show_data:
+            add_log("⚠️ 警告：猫眼返回成功，但 showData 字段为空！可能该影院无排片或被风控拦截。")
+            return
             
         movies = show_data.get("movies", [])
-        latest_movies_cache = movies # 更新缓存，供网页展示
+        latest_movies_cache = movies # 更新缓存
+        add_log(f"✅ 成功抓取到电影排片，共有电影数量: {len(movies)}")
         
         target_movie = config.get("movie", "").strip()
         target_date = config.get("date", "").strip()
+        add_log(f"🔍 筛选条件 -> 目标电影: '{target_movie}' | 目标日期: '{target_date}'")
         
         new_tickets = []
         for m in movies:
@@ -69,7 +89,6 @@ def check_cinema(cid):
                     continue
                 for p in show.get("plist", []):
                     tm = p.get("tm", "")
-                    # 尝试获取场次ID (通常叫 showId 或 id)
                     show_id = str(p.get("showId") or p.get("id", ""))
                     ticket_id = f"{cid}_{movie_name}_{show_date}_{tm}_{show_id}"
                     
@@ -77,11 +96,13 @@ def check_cinema(cid):
                         seen_tickets.add(ticket_id)
                         new_tickets.append(f"{movie_name} {show_date} {tm}")
                         
+        add_log(f"📊 本轮检索完毕: 发现新场次 {len(new_tickets)} 个")
         if new_tickets:
             send_bark("发现新场次！", " | ".join(new_tickets[:5]))
             
     except Exception as e:
-        add_log(f"🔴 巡检异常: {str(e)}")
+        add_log(f"🔴 抓取过程发生严重异常报错: {str(e)}")
+
 
 def monitor_task():
     add_log("🚀 后台监控守护进程已启动")
