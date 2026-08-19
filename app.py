@@ -11,7 +11,7 @@ app = Flask(__name__)
 # 全局变量与记忆库
 config = {
     "is_running": False,
-    "cinemas": [],
+    "cinemas": ["38279"],
     "movie": "",
     "date": ""
 }
