@@ -15,8 +15,6 @@ config = {
 logs = []
 seen_tickets = set()
 latest_movies_cache = []
-
-# 🧠 状态标记：记录每个影院是否已经发送过“无排片提醒”
 has_alerted_no_show = {}
 
 def add_log(msg):
@@ -148,7 +146,7 @@ def run_check_logic():
     latest_movies_cache = all_processed_movies
     add_log("📊 数据巡检与过滤完毕")
 
-# ================= 现代化大屏 UI (修复购票直达链接) =================
+# ================= 现代化大屏 UI (采用弹窗交互彻底解决403) =================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -179,10 +177,16 @@ HTML_TEMPLATE = """
         .date-label { font-size: 12px; font-weight: bold; color: #4b5563; margin-bottom: 4px; background: #f3f4f6; display: inline-block; padding: 2px 6px; border-radius: 4px; }
         
         .show-list { display: flex; flex-wrap: wrap; gap: 8px; }
-        .show-tag { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 6px 10px; border-radius: 6px; font-size: 12px; display: flex; flex-direction: column; align-items: center; min-width: 85px; cursor: pointer; transition: 0.15s; text-decoration: none; }
+        .show-tag { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 6px 10px; border-radius: 6px; font-size: 12px; display: flex; flex-direction: column; align-items: center; min-width: 85px; cursor: pointer; transition: 0.15s; }
         .show-tag:hover { background: #d1fae5; transform: scale(1.03); }
         .show-time { font-weight: bold; font-size: 13px; }
         .show-price { font-size: 11px; color: #047857; margin-top: 2px; }
+        
+        /* 弹窗样式 */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); justify-content: center; align-items: center; z-index: 1000; }
+        .modal-content { background: white; padding: 25px; border-radius: 10px; width: 380px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
+        .modal-btn { background: #ff4d4f; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px; margin-top: 15px; width: 100%; }
+        .modal-btn:hover { background: #ff7875; }
         
         .log-box { background: #1e1e1e; color: #00ff00; padding: 15px; border-radius: 6px; font-family: monospace; height: 160px; overflow-y: scroll; font-size: 12px; margin-top: 20px; }
     </style>
@@ -199,6 +203,18 @@ HTML_TEMPLATE = """
 
         <h2>📟 云端运行日志</h2>
         <div class="log-box" id="log-box"></div>
+    </div>
+
+    <!-- 购票指引弹窗 (彻底解决403) -->
+    <div class="modal" id="ticketModal" onclick="closeModal()">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <h3 id="modalMovieTitle" style="margin-top:0; color:#1e293b;">场次详情</h3>
+            <p id="modalShowInfo" style="font-size:14px; color:#475569; margin: 15px 0;"></p>
+            <p style="font-size: 12px; color: #8c8c8c; background: #f8fafc; padding: 10px; border-radius: 6px; text-align: left;">
+                💡 <b>购票提示</b>：猫眼网页版有严格的风控拦截（403）。建议打开手机【猫眼 App】或【微信猫眼小程序】，搜索该影院即可直接选座购票！
+            </p>
+            <button class="modal-btn" onclick="closeModal()">我知道了，去猫眼App抢票</button>
+        </div>
     </div>
 
     <script>
@@ -244,12 +260,11 @@ HTML_TEMPLATE = """
                             
                             s.plist.forEach(p => {
                                 let price = p.vipPrice || p.price || 'N/A';
-                                // 🛠️ 修复后的猫眼标准影院详情直达链接（不会再出现迷路页面）
-                                let maoyanSeatUrl = `https://m.maoyan.com/cinema/${c.cinemaId}?poi=1`;
-                                html += `<a class="show-tag" href="${maoyanSeatUrl}" target="_blank" title="点击直达猫眼选座">`;
+                                // 🛡️ 点击场次胶囊弹窗提示，彻底规避 403 拦截
+                                html += `<div class="show-tag" onclick="showTicketModal('${c.cinemaName}', '${m.nm}', '${s.showDate}', '${p.tm}', '${price}')">`;
                                 html += `<span class="show-time">🕒 ${p.tm}</span>`;
-                                html += `<span class="show-price">￥${price} 购票 ▶</span>`;
-                                html += `</a>`;
+                                html += `<span class="show-price">￥${price} 购票</span>`;
+                                html += `</div>`;
                             });
                             
                             html += `</div></div>`;
@@ -261,6 +276,16 @@ HTML_TEMPLATE = """
                 });
                 container.innerHTML = html;
             });
+        }
+
+        function showTicketModal(cinemaName, movieName, date, time, price) {
+            document.getElementById('modalMovieTitle').innerText = `🎥 《${movieName}》`;
+            document.getElementById('modalShowInfo').innerHTML = `<b>影院</b>：${cinemaName}<br><b>时间</b>：${date} ${time}<br><b>票价</b>：约 ￥${price}`;
+            document.getElementById('ticketModal').style.display = 'flex';
+        }
+
+        function closeModal() {
+            document.getElementById('ticketModal').style.display = 'none';
         }
 
         setInterval(fetchStatus, 4000);
