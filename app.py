@@ -16,6 +16,10 @@ logs = []
 seen_tickets = set()
 latest_movies_cache = []
 
+# 🧠 状态标记：记录每个影院是否已经发送过“无排片提醒”，避免重复骚扰
+# 格式: { cinema_id: True/False }
+has_alerted_no_show = {}
+
 def add_log(msg):
     now = datetime.now().strftime("%H:%M:%S")
     log_msg = f"[{now}] {msg}"
@@ -34,7 +38,7 @@ def send_bark(title, body):
         pass
 
 def run_check_logic():
-    global latest_movies_cache
+    global latest_movies_cache, has_alerted_no_show
     cinemas = config.get("cinemas", ["38279"])
     target_movie = config.get("movie", "").strip()
     target_date = config.get("date", "").strip()
@@ -42,7 +46,7 @@ def run_check_logic():
     today_str = datetime.now().strftime("%Y-%m-%d")
     two_weeks_later_str = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
     
-    add_log(f"🕵️ 正在抓取 | 目标电影: '{target_movie or '全部'}' | 日期范围: {target_date or f'未来两周 ({today_str} 至 {two_weeks_later_str})'}")
+    add_log(f"🕵️ 正在巡检 | 目标电影: '{target_movie or '全部'}' | 目标日期: '{target_date or '未来两周'}'")
     
     all_processed_movies = []
     
@@ -98,7 +102,6 @@ def run_check_logic():
                         
                         if ticket_id not in seen_tickets:
                             seen_tickets.add(ticket_id)
-                            # 🎯 详细记录：电影名 + 日期 + 时间
                             new_tickets_for_this_cinema.append(f"《{movie_name}》 {show_date} {tm}")
                             
                         valid_plist.append(p)
@@ -119,18 +122,36 @@ def run_check_logic():
                 "movies": filtered_movies_list
             })
             
-            # 🔔 如果当前影院发现了新场次，立刻发送结构清晰的 Bark 推送
-            if new_tickets_for_this_cinema:
-                title = f"🎬 [{cinema_name}] 发现新场次！"
-                body = " | ".join(new_tickets_for_this_cinema[:6]) # 最多展示6个，避免过长
-                send_bark(title, body)
-                add_log(f"🔔 已向手机发送推送，包含 {len(new_tickets_for_this_cinema)} 个新场次")
+            # 🎯 核心逻辑判定：
+            has_movies = len(filtered_movies_list) > 0
+            
+            if has_movies:
+                # 1. 发现了排片：如果之前发过无排片提醒，现在重置状态；如果有全新未见过的场次，发送喜讯
+                if has_alerted_no_show.get(cid, False):
+                    add_log(f"🟢 [{cinema_name}] 检测到排片已发布，解除无排片状态限制")
+                    has_alerted_no_show[cid] = False
+                
+                if new_tickets_for_this_cinema:
+                    title = f"🎉 [{cinema_name}] 抢票喜讯！新场次发布"
+                    body = " | ".join(new_tickets_for_this_cinema[:6])
+                    send_bark(title, body)
+                    add_log(f"🔔 已发送新场次喜讯推送: {len(new_tickets_for_this_cinema)} 个")
+            else:
+                # 2. 如果指定了具体电影和日期，但确实没有排片
+                if target_movie and target_date:
+                    # 如果还没发过无排片提醒，则发送【仅一次】
+                    if not has_alerted_no_show.get(cid, False):
+                        has_alerted_no_show[cid] = True
+                        send_bark(f"⏳ [{cinema_name}] 监控中...", f"指定日期 {target_date} 暂无《{target_movie}》排片，已进入静默监控，有新排片将立即通知！")
+                        add_log(f"⏳ 已发送【仅一次】无排片提醒：{cinema_name} 在 {target_date} 暂无《{target_movie}》")
+                    else:
+                        add_log(f"💤 [{cinema_name}] 暂无排片（已发送过提醒，保持静默监控中）")
                 
         except Exception as e:
             add_log(f"🔴 请求异常: {str(e)}")
             
     latest_movies_cache = all_processed_movies
-    add_log("📊 数据抓取与清洗完毕")
+    add_log("📊 数据巡检与过滤完毕")
 
 # ================= 现代化大屏 UI =================
 HTML_TEMPLATE = """
@@ -163,20 +184,10 @@ HTML_TEMPLATE = """
         .date-label { font-size: 12px; font-weight: bold; color: #4b5563; margin-bottom: 4px; background: #f3f4f6; display: inline-block; padding: 2px 6px; border-radius: 4px; }
         
         .show-list { display: flex; flex-wrap: wrap; gap: 8px; }
-        .show-tag { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 6px 10px; border-radius: 6px; font-size: 12px; display: flex; flex-direction: column; align-items: center; min-width: 85px; cursor: pointer; transition: 0.15s; }
+        .show-tag { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 6px 10px; border-radius: 6px; font-size: 12px; display: flex; flex-direction: column; align-items: center; min-width: 85px; cursor: pointer; transition: 0.15s; text-decoration: none; }
         .show-tag:hover { background: #d1fae5; transform: scale(1.03); }
         .show-time { font-weight: bold; font-size: 13px; }
         .show-price { font-size: 11px; color: #047857; margin-top: 2px; }
-        
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); justify-content: center; align-items: center; z-index: 1000; }
-        .modal-content { background: white; padding: 25px; border-radius: 10px; width: 420px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
-        .screen-bar { background: #cbd5e1; color: #475569; font-size: 12px; padding: 4px; border-radius: 4px; margin-bottom: 15px; font-weight: bold; letter-spacing: 2px; }
-        .seat-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; margin: 15px 0; justify-content: center; }
-        .seat { width: 38px; height: 38px; background: #22c55e; color: white; display: flex; justify-content: center; align-items: center; border-radius: 6px; font-size: 11px; font-weight: bold; }
-        .seat.sold { background: #e2e8f0; color: #94a3b8; }
-        .seat.best { border: 2px solid #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.5); }
-        .seat-legend { display: flex; justify-content: center; gap: 15px; font-size: 12px; color: #64748b; margin-bottom: 15px; }
-        .legend-item { display: flex; align-items: center; gap: 4px; }
         
         .log-box { background: #1e1e1e; color: #00ff00; padding: 15px; border-radius: 6px; font-family: monospace; height: 160px; overflow-y: scroll; font-size: 12px; margin-top: 20px; }
     </style>
@@ -185,28 +196,14 @@ HTML_TEMPLATE = """
     <div class="container">
         <h1>🎬 智能抢票与排片监控大屏</h1>
         <div class="toolbar">
-            <button class="btn-refresh" onclick="triggerCheck()">🔄 手动立即触发抓取</button>
-            <span class="status-badge" id="status-text">系统就绪</span>
+            <button class="btn-refresh" onclick="triggerCheck()">🔄 手动立即触发巡检</button>
+            <span class="status-badge" id="status-text">系统监控中</span>
         </div>
         
         <div id="content-container">正在加载排片与电影详情...</div>
 
         <h2>📟 云端运行日志</h2>
         <div class="log-box" id="log-box"></div>
-    </div>
-
-    <div class="modal" id="seatModal" onclick="closeModal()">
-        <div class="modal-content" onclick="event.stopPropagation()">
-            <h3 id="modalTitle" style="margin-top:0; color:#1e293b;">场次座位状态</h3>
-            <div class="screen-bar">银幕方向 SCREEN</div>
-            <div class="seat-legend">
-                <div class="legend-item"><span style="width:12px;height:12px;background:#22c55e;display:inline-block;border-radius:2px;"></span> 可选</div>
-                <div class="legend-item"><span style="width:12px;height:12px;background:#e2e8f0;display:inline-block;border-radius:2px;"></span> 已售</div>
-                <div class="legend-item"><span style="width:12px;height:12px;border:2px solid #f59e0b;display:inline-block;border-radius:2px;"></span> 黄金位</div>
-            </div>
-            <div class="seat-grid" id="seatGrid">加载中...</div>
-            <button onclick="closeModal()" style="padding: 8px 20px; background: #64748b; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:bold; margin-top:10px;">关闭窗口</button>
-        </div>
     </div>
 
     <script>
@@ -224,7 +221,7 @@ HTML_TEMPLATE = """
                 let cinemas = data.movies || [];
                 
                 if(cinemas.length === 0 || cinemas.every(c => c.movies.length === 0)) {
-                    container.innerHTML = "<p style='color:#6b7280; text-align:center; padding: 30px;'>暂无符合条件的排片数据。请点击上方按钮刷新！</p>";
+                    container.innerHTML = "<p style='color:#6b7280; text-align:center; padding: 30px;'>暂无符合条件的排片数据（若指定了日期且无排片，云端已自动发送【仅一次】未排片提醒，并进入静默监控）。</p>";
                     return;
                 }
                 
@@ -252,10 +249,10 @@ HTML_TEMPLATE = """
                             
                             s.plist.forEach(p => {
                                 let price = p.vipPrice || p.price || 'N/A';
-                                let showId = p.showId || p.id || '';
-                                html += `<div class="show-tag" onclick="openSeats('${showId}', '${m.nm} - ${s.showDate} ${p.tm}')">`;
+                                let maoyanSeatUrl = `https://m.maoyan.com/cinemas/detail/${c.cinemaId}`;
+                                html += `<a class="show-tag" href="${maoyanSeatUrl}" target="_blank" title="点击直达猫眼真实选座购票">`;
                                 html += `<span class="show-time">🕒 ${p.tm}</span>`;
-                                html += `<span class="show-price">￥${price}</span>`;
+                                html += `<span class="show-price">￥${price} 购票 ▶</span>`;
                                 html += `</div>`;
                             });
                             
@@ -270,30 +267,6 @@ HTML_TEMPLATE = """
             });
         }
 
-        function openSeats(showId, title) {
-            document.getElementById('modalTitle').innerText = title;
-            document.getElementById('seatModal').style.display = 'flex';
-            document.getElementById('seatGrid').innerHTML = "正在向猫眼查询实时座位...";
-            
-            fetch(`/api/seats?showId=${showId}`).then(res => res.json()).then(data => {
-                let grid = document.getElementById('seatGrid');
-                let seatHtml = "";
-                for(let i=1; i<=32; i++) {
-                    let isSold = Math.random() < 0.35; 
-                    let isBest = (i >= 10 && i <= 17);
-                    let cls = "seat";
-                    if(isSold) cls += " sold";
-                    if(isBest) cls += " best";
-                    seatHtml += `<div class="${cls}">#${i}</div>`;
-                }
-                grid.innerHTML = seatHtml;
-            });
-        }
-
-        function closeModal() {
-            document.getElementById('seatModal').style.display = 'none';
-        }
-
         setInterval(fetchStatus, 4000);
         fetchStatus();
     </script>
@@ -305,11 +278,6 @@ HTML_TEMPLATE = """
 def dashboard():
     return render_template_string(HTML_TEMPLATE)
 
-@app.route('/api/seats', methods=['GET'])
-def get_seats():
-    show_id = request.args.get('showId')
-    return jsonify({"success": True, "showId": show_id})
-
 @app.route('/api/trigger', methods=['GET', 'POST'])
 def api_trigger():
     run_check_logic()
@@ -317,8 +285,12 @@ def api_trigger():
 
 @app.route('/api/config', methods=['POST'])
 def update_config():
-    global config
+    global config, has_alerted_no_show
     data = request.json
+    # 如果用户修改了监控的电影或日期，重置无排片提醒状态
+    if data.get("movie") != config.get("movie") or data.get("date") != config.get("date"):
+        has_alerted_no_show = {}
+    
     config.update(data)
     add_log(f"🚀 收到新指令 -> 影院: {config['cinemas']} | 电影: '{config['movie']}' | 日期: '{config['date']}'")
     if config.get("is_running"):
